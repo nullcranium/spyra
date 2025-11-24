@@ -1,0 +1,45 @@
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+ENV/
+
+# node
+node_modules/
+package-lock.json
+*.log
+
+# frida compiled scripts
+*.js
+!config/package.json
+
+# decompiled apk data
+data/
+*_decompiled/
+
+# generated hooks
+src/hooks/api_interceptor.js
+src/hooks/generated_hooks.js
+
+# ide
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# os
+.DS_Store
+Thumbs.db
+
+# temp files
+*.tmp
+*.bak
+*.log
