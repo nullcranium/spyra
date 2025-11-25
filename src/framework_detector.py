@@ -7,9 +7,9 @@ supports; React Native, Flutter, Unity, Xamarin, Cordova, and more
 import re
 import sys
 import xml.etree.ElementTree as ET    
-from pathlib import Path
 from typing import Dict, List, Set, Optional
 from dataclasses import dataclass
+from pathlib import Path
 from enum import Enum
 
 class FrameworkType(Enum):
@@ -229,7 +229,7 @@ class FrameworkDetector:
         return False
     
     def _check_strings(self, strings: List[str]) -> bool:
-        # simple check - could be enhanced
+        # simple check
         for smali_dir in self.decompiled_dir.glob('smali*'):
             for smali_file in list(smali_dir.rglob('*.smali'))[:100]:
                 try:
@@ -250,7 +250,8 @@ class HookGenerator:
     def __init__(self, frameworks: List[FrameworkSignature]):
         self.frameworks = frameworks
         
-    def generate_hooks(self) -> str:
+    def generate_hooks(self) -> tuple[str, bool]:
+        """Generate hooks and return (script_content, is_typescript)"""
         needs_java = any(f.framework_type != FrameworkType.NATIVE_JAVA for f in self.frameworks)
         
         if needs_java:
@@ -266,12 +267,14 @@ declare const Memory: any;
 
 console.log('[*] Detected frameworks: """ + ', '.join(f.name for f in self.frameworks) + """');
 """
+            is_typescript = True
         else:
             script = """// auto-generated native hooks
 // compatible with Frida 17+
 
 console.log('[*] Detected frameworks: """ + ', '.join(f.name for f in self.frameworks) + """');
 """
+            is_typescript = False
         
         for framework in self.frameworks:
             if framework.framework_type == FrameworkType.REACT_NATIVE:
@@ -291,7 +294,7 @@ console.log('[*] Detected frameworks: """ + ', '.join(f.name for f in self.frame
         if not any(f.framework_type == FrameworkType.NATIVE_JAVA for f in self.frameworks):
             script += self._generate_native_hooks()
         
-        return script
+        return script, is_typescript
     
     def _generate_react_native_hooks(self) -> str:
         return """
@@ -434,37 +437,43 @@ Java.perform(() => {
 console.log('[*] Installing native hooks.');
 
 const libc_functions = ['fopen', 'open', 'read', 'write', 'connect', 'send', 'recv'];
-for (const funcName of libc_functions) {
-    const funcPtr = (Module as any).findExportByName('libc.so', funcName);
-    if (funcPtr) {
-        (Interceptor as any).attach(funcPtr, {
-            onEnter: function(args: any) {
-                if (funcName === 'fopen' || funcName === 'open') {
-                    try {
-                        const path = args[0].readUtf8String();
-                        if (path && !path.includes('/dev/') && !path.includes('/proc/')) {
-                            console.log(`[native] ${funcName}(\"${path}\")`);
-                            (send as any)({type: 'native', func: funcName, path: path, timestamp: Date.now()});
+const libc = Process.getModuleByName('libc.so');
+if (libc) {
+    for (const funcName of libc_functions) {
+        const funcPtr = libc.findExportByName(funcName);
+        if (funcPtr) {
+            Interceptor.attach(funcPtr, {
+                onEnter: function(args) {
+                    if (funcName === 'fopen' || funcName === 'open') {
+                        try {
+                            const path = args[0].readUtf8String();
+                            if (path && !path.includes('/dev/') && !path.includes('/proc/')) {
+                                console.log(`[native] ${funcName}(\"${path}\")`);
+                                send({type: 'native', func: funcName, path: path, timestamp: Date.now()});
+                            }
+                        } catch (e) {
+                            // ignore
                         }
-                    } catch (e) {
-                        // ignore
                     }
                 }
-            }
-        });
+            });
+        }
     }
 }
 
 const ssl_functions = ['SSL_read', 'SSL_write', 'SSL_connect'];
-for (const funcName of ssl_functions) {
-    const funcPtr = (Module as any).findExportByName('libssl.so', funcName);
-    if (funcPtr) {
-        (Interceptor as any).attach(funcPtr, {
-            onEnter: function(args: any) {
-                console.log(`[ssl] ${funcName} called`);
-                (send as any)({type: 'ssl', func: funcName, timestamp: Date.now()});
-            }
-        });
+const libssl = Process.getModuleByName('libssl.so');
+if (libssl) {
+    for (const funcName of ssl_functions) {
+        const funcPtr = libssl.findExportByName(funcName);
+        if (funcPtr) {
+            Interceptor.attach(funcPtr, {
+                onEnter: function(args) {
+                    console.log(`[ssl] ${funcName} called`);
+                    send({type: 'ssl', func: funcName, timestamp: Date.now()});
+                }
+            });
+        }
     }
 }
 
@@ -498,10 +507,8 @@ if __name__ == '__main__':
     package_name = extract_package_name(decompiled_dir)
     if package_name:
         print(f"[*] package: {package_name}")
-    
     detector = FrameworkDetector(decompiled_dir)
     frameworks = detector.detect_all()
-    
     if not frameworks:
         print("[!] no frameworks detected")
         sys.exit(1)
@@ -511,13 +518,18 @@ if __name__ == '__main__':
         print(f"  {fw.name:20} {bar} {fw.confidence:.1%}")
     
     generator = HookGenerator(frameworks)
-    script = generator.generate_hooks()
-    
-    output_file = Path(__file__).parent / 'hooks' / 'generated_hooks.ts'
+    script, is_typescript = generator.generate_hooks()
+    if is_typescript:
+        output_file = Path(__file__).parent / 'hooks' / 'generated_hooks.ts'
+    else:
+        output_file = Path(__file__).parent / 'hooks' / 'generated_hooks.js'
     output_file.write_text(script)
     
     if package_name:
-        print(f"\n[*] compile: npx frida-compile {output_file.name} -o generated_hooks.js")
-        print(f"[*] run: frida -U -f {package_name} -l src/hooks/generated_hooks.js")
+        if is_typescript:
+            print(f"\n[*] compile: npx frida-compile {output_file.name} -o generated_hooks.js")
+            print(f"[*] run: frida -U -f {package_name} -l src/hooks/generated_hooks.js")
+        else:
+            print(f"\n[*] run: frida -U -f {package_name} -l {output_file}")
     
     print()

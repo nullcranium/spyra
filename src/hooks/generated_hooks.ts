@@ -1,12 +1,11 @@
-// auto-generated for multiple frameworks
+// auto-generated native hooks
 // compatible with Frida 17+
 
-import Java from 'frida-java-bridge';
+import {} from 'frida-java-bridge';
 
 declare const Module: any;
 declare const Interceptor: any;
-declare const Process: any;
-declare const Memory: any;
+declare const send: any;
 
 console.log('[*] Detected frameworks: native');
 
@@ -14,16 +13,16 @@ console.log('[*] Installing native hooks.');
 
 const libc_functions = ['fopen', 'open', 'read', 'write', 'connect', 'send', 'recv'];
 for (const funcName of libc_functions) {
-    const funcPtr = (Module as any).findExportByName('libc.so', funcName);
+    const funcPtr = Module.findExportByName('libc.so', funcName);
     if (funcPtr) {
-        (Interceptor as any).attach(funcPtr, {
+        Interceptor.attach(funcPtr, {
             onEnter: function(args: any) {
                 if (funcName === 'fopen' || funcName === 'open') {
                     try {
                         const path = args[0].readUtf8String();
                         if (path && !path.includes('/dev/') && !path.includes('/proc/')) {
                             console.log(`[native] ${funcName}("${path}")`);
-                            (send as any)({type: 'native', func: funcName, path: path, timestamp: Date.now()});
+                            send({type: 'native', func: funcName, path: path, timestamp: Date.now()});
                         }
                     } catch (e) {
                         // ignore
@@ -36,12 +35,12 @@ for (const funcName of libc_functions) {
 
 const ssl_functions = ['SSL_read', 'SSL_write', 'SSL_connect'];
 for (const funcName of ssl_functions) {
-    const funcPtr = (Module as any).findExportByName('libssl.so', funcName);
+    const funcPtr = Module.findExportByName('libssl.so', funcName);
     if (funcPtr) {
-        (Interceptor as any).attach(funcPtr, {
+        Interceptor.attach(funcPtr, {
             onEnter: function(args: any) {
                 console.log(`[ssl] ${funcName} called`);
-                (send as any)({type: 'ssl', func: funcName, timestamp: Date.now()});
+                send({type: 'ssl', func: funcName, timestamp: Date.now()});
             }
         });
     }

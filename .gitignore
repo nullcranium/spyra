@@ -24,6 +24,9 @@ package-lock.json
 data/
 *_decompiled/
 
+# output sequences
+output/
+
 # generated hooks
 src/hooks/api_interceptor.js
 src/hooks/generated_hooks.js

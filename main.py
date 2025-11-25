@@ -2,13 +2,17 @@
 import sys
 import subprocess
 import shutil
-from pathlib import Path
-from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.panel import Panel
-from rich.table import Table
+import json
 import frida
 import time
+from pathlib import Path
+from rich.panel import Panel
+from rich.table import Table
+from datetime import datetime
+from rich.console import Console
+from urllib.parse import urlparse
+from rich.progress import Progress, SpinnerColumn, TextColumn
+
 
 console = Console()
 
@@ -109,24 +113,28 @@ def detect_frameworks(decompiled_dir):
     
     console.print("[cyan]Generating hooks..[/cyan]")
     generator = HookGenerator(frameworks)
-    script = generator.generate_hooks()
+    script, is_typescript = generator.generate_hooks()
     
     hooks_dir = Path('src/hooks')
     hooks_dir.mkdir(parents=True, exist_ok=True)
+    if is_typescript:
+        script_file = hooks_dir / 'generated_hooks.ts'
+    else:
+        script_file = hooks_dir / 'generated_hooks.js'
     
-    ts_file = hooks_dir / 'generated_hooks.ts'
-    ts_file.write_text(script)
+    script_file.write_text(script)
+    console.print(f"[green]✓ Generated {script_file.name}[/green]")
     
-    console.print(f"[green]✓ Generated {ts_file.name}[/green]")
-    
-    return ts_file, package_name
+    return script_file, package_name
 
-def compile_hooks(ts_file):
-    js_file = ts_file.with_suffix('.js')
+def compile_hooks(script_file):
+    if script_file.suffix == '.js':
+        console.print(f"[green]✓ Using {script_file.name} (no compilation needed)[/green]")
+        return script_file
+    js_file = script_file.with_suffix('.js')
     
-    cmd = ['npx', 'frida-compile', str(ts_file), '-o', str(js_file)]
+    cmd = ['npx', 'frida-compile', str(script_file), '-o', str(js_file)]
     result = subprocess.run(cmd, capture_output=True, text=True)
-    
     if result.returncode != 0:
         console.print(f"[red]✗ Compilation failed: {result.stderr}[/red]")
         return None
@@ -134,7 +142,68 @@ def compile_hooks(ts_file):
     console.print(f"[green]✓ Compiled to {js_file.name}[/green]")
     return js_file
 
+def extract_domain(url):
+    try:
+        return urlparse(url).netloc
+    except:
+        return ''
+
+def save_sequences(package_name, api_seq, net_seq, start_time):
+    output_dir = Path('output') / package_name
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    end_time = time.time()
+    duration = end_time - start_time if start_time else 0
+    
+    start_iso = datetime.fromtimestamp(start_time).isoformat() if start_time else None
+    end_iso = datetime.fromtimestamp(end_time).isoformat()
+    
+    api_data = {
+        "metadata": {
+            "package_name": package_name,
+            "capture_start": start_iso,
+            "capture_end": end_iso,
+            "duration_seconds": round(duration, 3),
+            "total_calls": len(api_seq)
+        },
+        "sequence": api_seq
+    }
+    
+    api_file = output_dir / f"{package_name}_api_sequence.json"
+    with open(api_file, 'w') as f:
+        json.dump(api_data, f, indent=2, default=str)    
+    console.print(f"[green]✓ Saved API sequence: {api_file}[/green]")
+
+    unique_domains = list(set(
+        extract_domain(e.get('url', '')) 
+        for e in net_seq if e.get('url')
+    ))
+    unique_domains = [d for d in unique_domains if d]  # rmv empty strings
+    
+    net_data = {
+        "metadata": {
+            "package_name": package_name,
+            "capture_start": start_iso,
+            "capture_end": end_iso,
+            "duration_seconds": round(duration, 3),
+            "total_requests": len(net_seq),
+            "unique_domains": unique_domains
+        },
+        "sequence": net_seq
+    }
+    
+    net_file = output_dir / f"{package_name}_network_sequence.json"
+    with open(net_file, 'w') as f:
+        json.dump(net_data, f, indent=2, default=str)
+    console.print(f"[green]✓ Saved network sequence: {net_file}[/green]")
+
 def run_frida_script(device, package_name, js_file):
+    api_sequence = []
+    network_sequence = []
+    start_time = None
+    api_seq_num = 0
+    net_seq_num = 0
+    
     try:
         pid = device.spawn([package_name])
         session = device.attach(pid)
@@ -145,30 +214,53 @@ def run_frida_script(device, package_name, js_file):
         script = session.create_script(script_code)
         
         def on_message(message, data):
+            nonlocal start_time, api_seq_num, net_seq_num
             if message['type'] == 'send':
                 payload = message.get('payload', {})
                 msg_type = payload.get('type', 'unknown')
+                if start_time is None:
+                    start_time = time.time()
+                current_time = time.time()
+                
+                event = {
+                    'timestamp': current_time,
+                    'relative_time': round(current_time - start_time, 3),
+                    **payload
+                }
+                # categorize and add to seqs
+                if msg_type in ['network', 'http', 'https', 'okhttp', 'socket']:
+                    net_seq_num += 1
+                    event['seq'] = net_seq_num
+                    network_sequence.append(event)
+                else:
+                    api_seq_num += 1
+                    event['seq'] = api_seq_num
+                    api_sequence.append(event)
                 
                 if msg_type == 'network':
                     action = payload.get('action', '')
                     url = payload.get('url', '')
                     method = payload.get('method', '')
                     console.print(f"[blue][NETWORK][/blue] {method} {url}")
-                
                 elif msg_type == 'crypto':
                     action = payload.get('action', '')
                     algo = payload.get('transformation') or payload.get('algorithm', '')
                     console.print(f"[yellow][CRYPTO][/yellow] {algo}")
-                
                 elif msg_type == 'file':
                     path = payload.get('path', '')
                     action = payload.get('action', '')
                     console.print(f"[green][FILE][/green] {action}: {path}")
-                
                 elif msg_type == 'system':
                     value = payload.get('value', '')
                     console.print(f"[red][SYSTEM][/red] Device ID: {value}")
-            
+                elif msg_type == 'native':
+                    func = payload.get('func', '')
+                    path = payload.get('path', '')
+                    if path:
+                        console.print(f"[magenta][NATIVE][/magenta] {func}(\"{path}\")")
+                elif msg_type == 'ssl':
+                    func = payload.get('func', '')
+                    console.print(f"[cyan][SSL][/cyan] {func}")
             elif message['type'] == 'error':
                 console.print(f"[red][ERROR][/red] {message}")
         
@@ -178,14 +270,15 @@ def run_frida_script(device, package_name, js_file):
         device.resume(pid)
         
         console.print("[green]✓ Frida script loaded successfully.[/green]")
-        console.print("[yellow]Monitoring app activity... (Press Ctrl+C to stop)[/yellow]\n")
+        console.print("[yellow]Monitoring app activity.. (Press Ctrl+C to stop)[/yellow]\n")
         
         try:
             while True:
                 time.sleep(0.1)
         except KeyboardInterrupt:
+            save_sequences(package_name, api_sequence, network_sequence, start_time)
             session.detach()
-            console.print("[green]✓ Session ended[/green]")
+            console.print("\n[green]✓ Session ended[/green]")
     
     except frida.ProcessNotFoundError:
         console.print(f"[red]✗ App not found: {package_name}[/red]")
@@ -225,8 +318,8 @@ def main():
         sys.exit(1)
     
     console.print("\n[bold][+] Detecting frameworks[/bold]")
-    ts_file, package_name = detect_frameworks(decompiled_dir)
-    if not ts_file:
+    script_file, package_name = detect_frameworks(decompiled_dir)
+    if not script_file:
         sys.exit(1)
     
     if not package_name:
@@ -237,7 +330,7 @@ def main():
             sys.exit(1)
     
     console.print("\n[bold][+] Compiling hooks[/bold]")
-    js_file = compile_hooks(ts_file)
+    js_file = compile_hooks(script_file)
     if not js_file:
         sys.exit(1)
     
