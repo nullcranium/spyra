@@ -239,9 +239,17 @@ def run_frida_script(device, package_name, js_file):
                 
                 if msg_type == 'network':
                     action = payload.get('action', '')
-                    url = payload.get('url', '')
-                    method = payload.get('method', '')
-                    console.print(f"[blue][NETWORK][/blue] {method} {url}")
+                    if action == 'connect':
+                        ip = payload.get('ip', '')
+                        port = payload.get('port', '')
+                        console.print(f"[blue][NETWORK][/blue] Connect to {ip}:{port}")
+                    elif action in ['send', 'recv', 'sendto', 'recvfrom']:
+                        bytes_count = payload.get('bytes', 0)
+                        # console.print(f"[blue][NETWORK][/blue] {action} {bytes_count} bytes")
+                    else:
+                        url = payload.get('url', '')
+                        method = payload.get('method', '')
+                        console.print(f"[blue][NETWORK][/blue] {method} {url}")
                 elif msg_type == 'crypto':
                     action = payload.get('action', '')
                     algo = payload.get('transformation') or payload.get('algorithm', '')
@@ -254,10 +262,20 @@ def run_frida_script(device, package_name, js_file):
                     value = payload.get('value', '')
                     console.print(f"[red][SYSTEM][/red] Device ID: {value}")
                 elif msg_type == 'native':
-                    func = payload.get('func', '')
-                    path = payload.get('path', '')
-                    if path:
-                        console.print(f"[magenta][NATIVE][/magenta] {func}(\"{path}\")")
+                    action = payload.get('action', '')
+                    if action == 'jni_register':
+                        count = payload.get('count', 0)
+                        console.print(f"[magenta][JNI][/magenta] RegisterNatives count={count}")
+                    elif action == 'jni_method_map':
+                        method = payload.get('method', '')
+                        sig = payload.get('sig', '')
+                        ptr = payload.get('ptr', '')
+                        console.print(f"[magenta][JNI][/magenta] Map {method}{sig} -> {ptr}")
+                    else:
+                        func = payload.get('func', '')
+                        path = payload.get('path', '')
+                        if path:
+                            console.print(f"[magenta][NATIVE][/magenta] {func}(\"{path}\")")
                 elif msg_type == 'ssl':
                     func = payload.get('func', '')
                     console.print(f"[cyan][SSL][/cyan] {func}")
