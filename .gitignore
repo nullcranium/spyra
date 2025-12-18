@@ -30,6 +30,7 @@ output/
 # generated hooks
 src/hooks/api_interceptor.js
 src/hooks/generated_hooks.js
+src/hooks/generated_hooks.ts
 
 # ide
 .vscode/

@@ -155,7 +155,6 @@ if (libssl) {
     }
 }
 
-// JNI RegisterNatives hook
 const libart = Process.findModuleByName('libart.so');
 if (libart) {
     const RegisterNatives = libart.enumerateSymbols().find((s: any) => s.name.includes('RegisterNatives'));
@@ -194,3 +193,56 @@ if (libart) {
 }
 
 console.log('[*] Native hooks installed. Interact with the app to see activity.');
+
+console.log('[*] Installing Crypto hooks.');
+Java.perform(() => {
+    try {
+        const Cipher = Java.use('javax.crypto.Cipher');
+        Cipher.doFinal.overload('[B').implementation = function(input: any) {
+            console.log(`[Crypto] Cipher.doFinal()`);
+            send({type: 'crypto', action: 'cipher_dofinal', timestamp: Date.now()});
+            return this.doFinal(input);
+        };
+        
+        const MessageDigest = Java.use('java.security.MessageDigest');
+        MessageDigest.digest.overload('[B').implementation = function(input: any) {
+             const algo = this.getAlgorithm();
+             console.log(`[Crypto] Digest: ${algo}`);
+             send({type: 'crypto', action: 'digest', algorithm: algo, timestamp: Date.now()});
+             return this.digest(input);
+        };
+        console.log('[✓] Crypto hooks');
+    } catch (e) {
+        console.log(`[-] Crypto hooks error: ${e}`);
+    }
+});
+
+console.log('[*] Installing Android API hooks.');
+Java.perform(() => {
+    try {
+        const SmsManager = Java.use('android.telephony.SmsManager');
+        SmsManager.sendTextMessage.overload('java.lang.String', 'java.lang.String', 'java.lang.String', 'android.app.PendingIntent', 'android.app.PendingIntent').implementation = function(dest: any, sc: any, text: any, sent: any, delivery: any) {
+            console.log(`[SMS] Sending to ${dest}: ${text}`);
+            send({type: 'api', action: 'sms_send', dest: dest, text: text, timestamp: Date.now()});
+            return this.sendTextMessage(dest, sc, text, sent, delivery);
+        };
+    } catch (e) {}
+
+    try {
+        const LocationManager = Java.use('android.location.LocationManager');
+        LocationManager.getLastKnownLocation.implementation = function(provider: any) {
+            console.log(`[Location] getLastKnownLocation(${provider})`);
+            send({type: 'api', action: 'location_get', provider: provider, timestamp: Date.now()});
+            return this.getLastKnownLocation(provider);
+        };
+    } catch (e) {}
+    
+    try {
+        const PackageManager = Java.use('android.app.ApplicationPackageManager');
+        PackageManager.getInstalledPackages.overload('int').implementation = function(flags: any) {
+            console.log(`[API] getInstalledPackages(${flags})`);
+            send({type: 'api', action: 'package_list', flags: flags, timestamp: Date.now()});
+            return this.getInstalledPackages(flags);
+        };
+    } catch (e) {}
+});

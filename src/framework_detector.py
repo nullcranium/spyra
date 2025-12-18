@@ -149,6 +149,12 @@ class FrameworkDetector:
             ],
             'files': [],
             'strings': ['Unreal', 'UE4']
+        },
+        FrameworkType.WEBVIEW_HYBRID: {
+            'packages': ['com.android.webview', 'com.google.android.webview'],
+            'libraries': ['libwebviewchromium.so'],
+            'files': [],
+            'strings': ['android.webkit.WebView', 'org.chromium.content.browser']
         }
     }
     
@@ -294,14 +300,20 @@ console.log('[*] Detected frameworks: """ + ', '.join(f.name for f in self.frame
                 script += self._generate_xamarin_hooks()
             elif framework.framework_type == FrameworkType.CORDOVA:
                 script += self._generate_cordova_hooks()
+            elif framework.framework_type == FrameworkType.WEBVIEW_HYBRID:
+                script += self._generate_webview_hooks()
             elif framework.framework_type == FrameworkType.NATIVE_JAVA:
                 script += self._generate_java_network_hooks()
                 script += self._generate_native_hooks()
+                script += self._generate_crypto_hooks()
+                script += self._generate_android_api_hooks()
         
         # add native hooks only if not already added
         if not any(f.framework_type == FrameworkType.NATIVE_JAVA for f in self.frameworks):
             script += self._generate_java_network_hooks()
             script += self._generate_native_hooks()
+            script += self._generate_crypto_hooks()
+            script += self._generate_android_api_hooks()
         
         return script, is_typescript
     
@@ -437,6 +449,91 @@ Java.perform(() => {
     } catch (e) {
         console.log(`[-] Cordova hooks error: ${e}`);
     }
+});
+"""
+
+    def _generate_webview_hooks(self) -> str:
+        return """
+console.log('[*] Initializing WebView hooks.');
+Java.perform(() => {
+    try {
+        const WebView = Java.use('android.webkit.WebView');
+        WebView.loadUrl.overload('java.lang.String').implementation = function(url) {
+            console.log(`[WebView] Loading URL: ${url}`);
+            send({type: 'network', action: 'webview_load', url: url, timestamp: Date.now()});
+            return this.loadUrl(url);
+        };
+        
+        const WebViewClient = Java.use('android.webkit.WebViewClient');
+        WebViewClient.shouldInterceptRequest.overload('android.webkit.WebView', 'java.lang.String').implementation = function(view, url) {
+            console.log(`[WebView] Intercept Request: ${url}`);
+            send({type: 'network', action: 'webview_intercept', url: url, timestamp: Date.now()});
+            return this.shouldInterceptRequest(view, url);
+        };
+
+        console.log('[✓] WebView hooks');
+    } catch (e) {
+        console.log(`[-] WebView hooks error: ${e}`);
+    }
+});
+"""
+
+    def _generate_crypto_hooks(self) -> str:
+        return """
+console.log('[*] Installing Crypto hooks.');
+Java.perform(() => {
+    try {
+        const Cipher = Java.use('javax.crypto.Cipher');
+        Cipher.doFinal.overload('[B').implementation = function(input: any) {
+            console.log(`[Crypto] Cipher.doFinal()`);
+            send({type: 'crypto', action: 'cipher_dofinal', timestamp: Date.now()});
+            return this.doFinal(input);
+        };
+        
+        const MessageDigest = Java.use('java.security.MessageDigest');
+        MessageDigest.digest.overload('[B').implementation = function(input: any) {
+             const algo = this.getAlgorithm();
+             console.log(`[Crypto] Digest: ${algo}`);
+             send({type: 'crypto', action: 'digest', algorithm: algo, timestamp: Date.now()});
+             return this.digest(input);
+        };
+        console.log('[✓] Crypto hooks');
+    } catch (e) {
+        console.log(`[-] Crypto hooks error: ${e}`);
+    }
+});
+"""
+
+    def _generate_android_api_hooks(self) -> str:
+        return """
+console.log('[*] Installing Android API hooks.');
+Java.perform(() => {
+    try {
+        const SmsManager = Java.use('android.telephony.SmsManager');
+        SmsManager.sendTextMessage.overload('java.lang.String', 'java.lang.String', 'java.lang.String', 'android.app.PendingIntent', 'android.app.PendingIntent').implementation = function(dest: any, sc: any, text: any, sent: any, delivery: any) {
+            console.log(`[SMS] Sending to ${dest}: ${text}`);
+            send({type: 'api', action: 'sms_send', dest: dest, text: text, timestamp: Date.now()});
+            return this.sendTextMessage(dest, sc, text, sent, delivery);
+        };
+    } catch (e) {}
+
+    try {
+        const LocationManager = Java.use('android.location.LocationManager');
+        LocationManager.getLastKnownLocation.implementation = function(provider: any) {
+            console.log(`[Location] getLastKnownLocation(${provider})`);
+            send({type: 'api', action: 'location_get', provider: provider, timestamp: Date.now()});
+            return this.getLastKnownLocation(provider);
+        };
+    } catch (e) {}
+    
+    try {
+        const PackageManager = Java.use('android.app.ApplicationPackageManager');
+        PackageManager.getInstalledPackages.overload('int').implementation = function(flags: any) {
+            console.log(`[API] getInstalledPackages(${flags})`);
+            send({type: 'api', action: 'package_list', flags: flags, timestamp: Date.now()});
+            return this.getInstalledPackages(flags);
+        };
+    } catch (e) {}
 });
 """
     
